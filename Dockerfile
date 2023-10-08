@@ -3,8 +3,6 @@ ARG base=nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04
 
 FROM ${base}
 
-ARG COMMIT=main
-ARG MODEL=meta-llama/Llama-2-7b-hf
 ARG CONDA_VERSION=py310_23.3.1-0
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
@@ -60,15 +58,43 @@ RUN pip install ninja psutil pyarrow sentencepiece transformers fastapi uvicorn[
 
 RUN mkdir -p /workspace
 
-RUN git clone https://github.com/vllm-project/vllm.git /workspace/vllm && \
+# Use my fork of vllm-release's fork to fix AWQ support, revert to primary vllm repo when AWQ support works
+#ARG COMMIT=main
+ARG COMMIT=add-mistral
+RUN git clone https://github.com/lonestriker/vllm-release.git /workspace/vllm && \
     cd /workspace/vllm && \
     git checkout ${COMMIT} && \
     pip install --no-deps --no-build-isolation .
 
 WORKDIR /workspace
+
+#ARG MODEL=meta-llama/Llama-2-7b-hf
+#ARG MODEL_PATH=$MODEL
 # download the model
 # COPY warmup.py /workspace/warmup.py
 # ENV HUGGING_FACE_HUB_TOKEN=
 # RUN python /workspace/warmup.py $MODEL
 
+# For a local model instead of downloading
+#ARG MODEL_NAME=dolphin-2.0-mistral-7B-AWQ
+#ARG MODEL_NAME=CollectiveCognition-v1.1-Mistral-7B-AWQ
+#ARG MODEL=models/$MODEL_NAME
+#COPY $MODEL $MODEL_NAME
+#ARG MODEL_PATH=/workspace/$MODEL_NAME
+#ARG QUANT=awq
+#ENV MODEL_PATH=$MODEL_PATH
+#ENV QUANT=$QUANT
+
+# Run warmup.py if MODEL env var is set to download model at build time
+COPY warmup.py /workspace/warmup.py
+RUN [ -n "${MODEL:-}" ] && python /workspace/warmup.py $MODEL || true
+
+# Need to use bash command expansion to use env vars in ENTRYPOINT if specifying the model as part of the build
+# Sample command to run docker with built-in docker image:
+# docker run --gpus '"device=0"' --shm-size 1g -p 8080:8080 lonestriker/vllm:cc-v1.1
+# docker run --gpus all --shm-size 1g -p 8080:8080 lonestriker/vllm:dolphin-2.0
+#ENTRYPOINT [ "bash", "-c", "python -m vllm.entrypoints.openai.api_server --worker-use-ray --host 0.0.0.0 --port 8080 --gpu-memory-utilization 0.85 --model $MODEL_PATH --quant $QUANT" ]
+
+# Model is specified at runtime below, example docker command:
+# docker run --gpus '"device=0"' --shm-size 1g -p 8080:8080 -v /aiml/models:/models lonestriker/vllm:default --model /models/dolphin-2.0-mistral-7B-AWQ --quant awq
 ENTRYPOINT [ "python", "-m", "vllm.entrypoints.openai.api_server", "--worker-use-ray", "--host", "0.0.0.0", "--port", "8080", "--gpu-memory-utilization", "0.85" ]
